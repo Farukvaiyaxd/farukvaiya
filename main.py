@@ -1,13 +1,10 @@
 import os
 import logging
 import google.generativeai as genai
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import asyncio
-from datetime import datetime, timedelta
-import random
-import re
-import json
+from datetime import datetime
 
 # Configure logging
 logging.basicConfig(
@@ -17,27 +14,25 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Configuration
-TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '8380869007:AAFop4k07N5Sc1AaD3vFbrudyh3iiHTdvto')
-GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
-ADMIN_USER_ID = int(os.getenv('ADMIN_USER_ID', '7835226724'))
+TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', ''8380869007:AAEb1oevYkGl_z1PfXhUiuNMmH9Gg9aBbI4)
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')  # Can be set via environment or /api command
+ADMIN_USER_ID = int(os.getenv('ADMIN_USER_ID', '7960622720'))  # Set your Telegram user ID here
 PORT = int(os.getenv('PORT', 8000))
 
-# Global variables
+# Global variables for dynamic API key management
 current_gemini_api_key = GEMINI_API_KEY
 model = None
-vision_model = None
 
 def initialize_gemini_model(api_key):
     """Initialize Gemini model with the provided API key"""
-    global model, vision_model, current_gemini_api_key
+    global model, current_gemini_api_key
     try:
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel('gemini-1.5-flash')
-        vision_model = genai.GenerativeModel('gemini-1.5-flash')
         current_gemini_api_key = api_key
-        return True, "জেমিনি এপিআই সফলভাবে কনফিগার করা হয়েছে!"
+        return True, "✅ Gemini API configured successfully!"
     except Exception as e:
-        return False, f"ত্রুটি: জেমিনি এপিআই কনফিগার করতে সমস্যা: {str(e)}"
+        return False, f"❌ Error configuring Gemini API: {str(e)}"
 
 # Initialize Gemini if API key is available
 if GEMINI_API_KEY:
@@ -49,28 +44,8 @@ if GEMINI_API_KEY:
 else:
     logger.warning("GEMINI_API_KEY not set. Use /api command to configure.")
 
-# Store data
+# Store conversation context for each chat
 conversation_context = {}
-group_activity = {}
-user_data = {}
-
-# Response probability and triggers
-RESPONSE_PROBABILITY = {
-    'question_words': 0.9,
-    'emotion_words': 0.8,
-    'greeting_words': 0.7,
-    'random_chat': 0.3,
-    'keywords': 0.8
-}
-
-TRIGGER_PATTERNS = {
-    'questions': ['what', 'how', 'why', 'when', 'where', 'who', 'can', 'will', 'should', '?', 'কি', 'কেন', 'কিভাবে'],
-    'emotions': ['sad', 'happy', 'angry', 'excited', 'tired', 'bored', 'lonely', 'love', 'hate', 'খুশি', 'দুঃখিত',
-                 '😭', '😂', '😍', '😡', '😴', '🥱', '💕', '❤️', '💔', '😢', '😊'],
-    'greetings': ['hello', 'hi', 'hey', 'good morning', 'good night', 'bye', 'goodbye', 'আসসালামু', 'হ্যালো'],
-    'keywords': ['bot', 'ai', 'gemini', 'cute', 'beautiful', 'smart', 'funny', 'help', 'thanks', 'ধন্যবাদ'],
-    'bangla': ['বাংলা', 'বাংলায়', 'bengali', 'translate', 'অনুবাদ']
-}
 
 class TelegramGeminiBot:
     def __init__(self):
@@ -78,583 +53,235 @@ class TelegramGeminiBot:
         self.setup_handlers()
 
     def setup_handlers(self):
-        """Set up handlers"""
-        # Basic commands
+        """Set up command and message handlers"""
+        # Commands
         self.application.add_handler(CommandHandler("start", self.start_command))
         self.application.add_handler(CommandHandler("help", self.help_command))
         self.application.add_handler(CommandHandler("clear", self.clear_command))
         self.application.add_handler(CommandHandler("status", self.status_command))
         self.application.add_handler(CommandHandler("api", self.api_command))
         self.application.add_handler(CommandHandler("setadmin", self.setadmin_command))
-        self.application.add_handler(CommandHandler("automode", self.automode_command))
-        
-        # New features
-        self.application.add_handler(CommandHandler("translate", self.translate_command))
-        self.application.add_handler(CommandHandler("image", self.image_command))
-        self.application.add_handler(CommandHandler("joke", self.joke_command))
-        self.application.add_handler(CommandHandler("story", self.story_command))
-        self.application.add_handler(CommandHandler("math", self.math_command))
-        self.application.add_handler(CommandHandler("weather", self.weather_command))
-        self.application.add_handler(CommandHandler("remind", self.remind_command))
         
         # Message handlers
         self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
-        self.application.add_handler(MessageHandler(filters.PHOTO, self.handle_photo))
-        self.application.add_handler(CallbackQueryHandler(self.handle_callback))
+        
+        # Error handler
         self.application.add_error_handler(self.error_handler)
 
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Start command with menu"""
-        keyboard = [
-            [InlineKeyboardButton("সাহায্য", callback_data="help"),
-             InlineKeyboardButton("ফিচার", callback_data="features")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
+        """Handle /start command"""
         welcome_message = """
-হায়! আমি I Master Tools, তোমার এআই সঙ্গী! 
+🤖 Welcome to LemuX Cats Bot!
 
-নতুন ফিচার:
-🔤 অনুবাদ (/translate)  
-📸 ছবি বিশ্লেষণ (/image)
-🎭 জোক ও গল্প
-🧮 গণিত সমাধান
-🌤️ আবহাওয়ার তথ্য
-⏰ রিমাইন্ডার
+I'm powered by Google's Gemini AI and ready to chat with you!
 
-গ্রুপে আমাকে মেনশন করে কথা শুরু করো! 💕
+Commands:
+/start - Show this welcome message
+/help - Get help and usage information
+/clear - Clear conversation history
+/status - Check bot status
+/api <key> - Set Gemini API key (admin only)
+/setadmin - Set yourself as admin (first time only)
+
+Just send me any message and I'll respond using AI!
         """
-        # Add custom message with Telegram button
-        custom_message = """
-আমাদের দারুণ কমিউনিটিতে যোগ দাও!  
-আমার সাথে এবং অন্যদের সাথে আমাদের প্রাণবন্ত টেলিগ্রাম গ্রুপে চ্যাট করো! 💬✨  
-নিচে ক্লিক করে মজায় যোগ দাও! 😊
-        """
-        join_button = [[InlineKeyboardButton("VPSHUB_BD_CHAT-এ যোগ দাও", url="https://t.me/VPSHUB_BD_CHAT")]]
-        custom_reply_markup = InlineKeyboardMarkup(join_button)
-        
-        await update.message.reply_text(welcome_message, reply_markup=reply_markup)
-        await update.message.reply_text(custom_message, reply_markup=custom_reply_markup)
+        await update.message.reply_text(welcome_message)
 
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Help command"""
+        """Handle /help command"""
         help_message = """
-কমান্ড:
+🆘 Help & Commands:
 
-বেসিক: /start /help /clear /status
-অ্যাডমিন: /api /setadmin /automode
+/start - Show welcome message
+/help - Show this help message
+/clear - Clear your conversation history
+/status - Check if the bot is working
+/api <key> - Set Gemini API key (admin only)
+/setadmin - Set yourself as admin (first time use)
 
-ফিচার:
-/translate <টেক্সট> - টেক্সট অনুবাদ
-/image - ছবি বিশ্লেষণ  
-/joke - র‍্যান্ডম জোক
-/story <টপিক> - গল্প তৈরি
-/math <প্রবলেম> - গণিত সমাধান
-/weather <শহর> - আবহাওয়ার তথ্য
-/remind <মিনিট> <টেক্সট> - রিমাইন্ডার সেট
+💬 How to use:
+- Just send me any text message and I'll respond
+- I can answer questions, help with tasks, have conversations
+- In groups, reply to my messages or mention me
+- I remember our conversation context until you use /clear
 
-গ্রুপে আমাকে মেনশন করে চ্যাট করো! 💕
+⚡ Powered by Google Gemini AI
         """
         await update.message.reply_text(help_message)
 
-    async def translate_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Smart mention translation system"""
-        if not current_gemini_api_key or not model:
-            await update.message.reply_text("এপিআই কী প্রয়োজন! /api কমান্ড ব্যবহার করো")
-            return
-
-        # Check if there are mentions in the command
-        entities = update.message.entities or []
-        mentions = []
-        
-        for entity in entities:
-            if entity.type == "mention":
-                mention_text = update.message.text[entity.offset:entity.offset + entity.length]
-                mentions.append(mention_text)
-            elif entity.type == "text_mention":
-                user = entity.user
-                username = f"@{user.username}" if user.username else user.first_name
-                mentions.append(username)
-
-        # Method 1: Reply to message
-        if update.message.reply_to_message and update.message.reply_to_message.text:
-            text_to_translate = update.message.reply_to_message.text
-            original_user = update.message.reply_to_message.from_user
-            target_mention = f"@{original_user.username}" if original_user.username else original_user.first_name
-            
-        # Method 2: Mention + text in same message  
-        elif mentions and len(update.message.text.split()) > 2:
-            # Extract text after mentions and /translate command
-            words = update.message.text.split()
-            # Find where actual text starts (after /translate and mentions)
-            text_start_idx = 1  # Skip /translate
-            for word in words[1:]:
-                if word.startswith('@') or word in mentions:
-                    text_start_idx += 1
-                else:
-                    break
-            
-            if text_start_idx < len(words):
-                text_to_translate = ' '.join(words[text_start_idx:])
-                target_mention = mentions[0] if mentions else None
-            else:
-                await update.message.reply_text("মেনশনের পরে টেক্সট দাও!")
-                return
-                
-        # Method 3: Direct text only
-        elif context.args:
-            text_to_translate = ' '.join(context.args)
-            target_mention = None
-            
-        else:
-            await update.message.reply_text("""
-অনুবাদের পদ্ধতি:
-
-১. রিপ্লাই পদ্ধতি:
-যেকোনো মেসেজে রিপ্লাই করে `/translate`
-
-২. মেনশন পদ্ধতি:
-`/translate @username হ্যালো, তুমি কেমন আছো?`
-`/translate @username আমি ভালো আছি`
-
-৩. সরাসরি পদ্ধতি:
-`/translate হ্যালো ওয়ার্ল্ড`
-
-আমি স্মার্টভাবে ভাষা সনাক্ত করে অনুবাদ করব! 💕
-            """)
-            return
-
-        try:
-            # Smart translation with language detection
-            prompt = f"""
-এই টেক্সটটি স্মার্টভাবে অনুবাদ করো:
-
-টেক্সট: "{text_to_translate}"
-
-নিয়ম:
-- যদি বাংলা হয় → ইংরেজি
-- যদি ইংরেজি হয় → বাংলা
-- অন্য ভাষা হলে → ইংরেজি এবং বাংলা উভয়
-- মূল টোন এবং অর্থ অক্ষুণ্ণ রাখো
-- স্বাভাবিক এবং কথোপকথনের মতো হবে
-
-অতিরিক্ত ফরম্যাটিং ছাড়া পরিষ্কার অনুবাদ দাও।
-"""
-            
-            response = model.generate_content(prompt)
-            translation_result = response.text.strip()
-            
-            # Format final message
-            if target_mention:
-                final_message = f"{target_mention}\n\nঅনুবাদ:\n{translation_result}"
-            else:
-                final_message = f"অনুবাদ:\n{translation_result}"
-                
-            await update.message.reply_text(f"এইআই থেকে রিপ্লাই আসবে\n{final_message}")
-                
-        except Exception as e:
-            await update.message.reply_text(f"এইআই থেকে রিপ্লাই আসবে\nঅনুবাদ ব্যর্থ: {str(e)}")
-            
-        # Clean up command message
-        try:
-            await context.bot.delete_message(
-                chat_id=update.effective_chat.id, 
-                message_id=update.message.message_id
-            )
-        except:
-            pass
-
-    async def image_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Image analysis help"""
-        await update.message.reply_text("এইআই থেকে রিপ্লাই আসবে\nআমাকে যেকোনো ছবি পাঠাও, আমি তা বিশ্লেষণ করব! 💕")
-
-    async def joke_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Generate jokes"""
-        if current_gemini_api_key and model:
-            try:
-                response = model.generate_content("ইমোজি সহ একটি ছোট মজার জোক বলো")
-                await update.message.reply_text(f"এইআই থেকে রিপ্লাই আসবে\n😄 {response.text}")
-            except:
-                jokes = ["😄 রোবট কখনো প্যানিক করে না কেন? তাদের সার্কিট ভালো! 🤖", 
-                        "😂 কম্পিউটারের প্রিয় স্ন্যাক কী? মাইক্রোচিপ! 💾"]
-                await update.message.reply_text(f"এইআই থেকে রিপ্লাই আসবে\n{random.choice(jokes)}")
-        else:
-            await update.message.reply_text("এইআই থেকে রিপ্লাই আসবে\nজোকের জন্য এপিআই প্রয়োজন!")
-
-    async def story_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Generate short stories"""
-        topic = ' '.join(context.args) if context.args else "বন্ধুত্ব"
-        
-        if current_gemini_api_key and model:
-            try:
-                prompt = f"{topic} নিয়ে ইমোজি সহ ১০০ শব্দের একটি ছোট গল্প লেখো"
-                response = model.generate_content(prompt)
-                await update.message.reply_text(f"এইআই থেকে রিপ্লাই আসবে\nগল্প:\n\n{response.text}")
-            except Exception as e:
-                await update.message.reply_text(f"এইআই থেকে রিপ্লাই আসবে\nত্রুটি: {str(e)}")
-        else:
-            await update.message.reply_text("এইআই থেকে রিপ্লাই আসবে\nগল্পের জন্য এপিআই প্রয়োজন!")
-
-    async def math_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Solve math problems"""
-        if not context.args:
-            await update.message.reply_text("এইআই থেকে রিপ্লাই আসবে\nব্যবহার: /math <প্রবলেম>\nউদাহরণ: /math 25 + 17 * 3")
-            return
-
-        problem = ' '.join(context.args)
-        
-        if current_gemini_api_key and model:
-            try:
-                prompt = f"ধাপে ধাপে এই গণিত সমাধান করো: {problem}"
-                response = model.generate_content(prompt)
-                await update.message.reply_text(f"এইআই থেকে রিপ্লাই আসবে\nসমাধান:\n{response.text}")
-            except Exception as e:
-                await update.message.reply_text(f"এইআই থেকে রিপ্লাই আসবে\nত্রুটি: {str(e)}")
-        else:
-            await update.message.reply_text("এইআই থেকে রিপ্লাই আসবে\nগণিতের জন্য এপিআই প্রয়োজন!")
-
-    async def weather_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Weather info"""
-        if not context.args:
-            await update.message.reply_text("এইআই থেকে রিপ্লাই আসবে\nব্যবহার: /weather <শহর>\nউদাহরণ: /weather ঢাকা")
-            return
-
-        city = ' '.join(context.args)
-        
-        if current_gemini_api_key and model:
-            try:
-                prompt = f"{city} এর জন্য আবহাওয়ার পরামর্শ এবং সাধারণ তথ্য ইমোজি সহ দাও"
-                response = model.generate_content(prompt)
-                await update.message.reply_text(f"এইআই থেকে রিপ্লাই আসবে\n{city} এর আবহাওয়া:\n{response.text}")
-            except Exception as e:
-                await update.message.reply_text(f"এইআই থেকে রিপ্লাই আসবে\nত্রুটি: {str(e)}")
-        else:
-            await update.message.reply_text("এইআই থেকে রিপ্লাই আসবে\nআবহাওয়ার জন্য এপিআই প্রয়োজন!")
-
-    async def remind_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Set reminders"""
-        if len(context.args) < 2:
-            await update.message.reply_text("এইআই থেকে রিপ্লাই আসবে\nব্যবহার: /remind <মিনিট> <মেসেজ>\nউদাহরণ: /remind 30 ওষুধ খাও")
-            return
-
-        try:
-            minutes = int(context.args[0])
-            message = ' '.join(context.args[1:])
-            
-            await update.message.reply_text(f"এইআই থেকে রিপ্লাই আসবে\n{minutes} মিনিটের জন্য রিমাইন্ডার সেট করা হয়েছে: {message}")
-            
-            # Schedule reminder
-            context.job_queue.run_once(
-                self.send_reminder,
-                minutes * 60,
-                data={'chat_id': update.effective_chat.id, 'message': message, 'user': update.effective_user.first_name}
-            )
-        except ValueError:
-            await update.message.reply_text("এইআই থেকে রিপ্লাই আসবে\nসঠিক মিনিটের সংখ্যা দাও!")
-
-    async def send_reminder(self, context: ContextTypes.DEFAULT_TYPE):
-        """Send reminder"""
-        data = context.job.data
-        try:
-            await context.bot.send_message(
-                chat_id=data['chat_id'],
-                text=f"এইআই থেকে রিপ্লাই আসবে\n{data['user']} এর জন্য রিমাইন্ডার: {data['message']} 💕"
-            )
-        except Exception as e:
-            logger.error(f"Reminder failed: {e}")
-
-    async def handle_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle photo analysis"""
-        try:
-            if update.effective_chat.type == 'private':
-                join_button = [[InlineKeyboardButton("VPSHUB_BD_CHAT-এ যোগ দাও", url="https://t.me/VPSHUB_BD_CHAT")]]
-                reply_markup = InlineKeyboardMarkup(join_button)
-                await update.message.reply_text(
-                    "হায়! আমি ছবি বিশ্লেষণ করতে পারি, কিন্তু চলো আমাদের দারুণ গ্রুপে কথা বলি! সেখানে ছবি শেয়ার করো! 💬✨",
-                    reply_markup=reply_markup
-                )
-                return
-
-            if not current_gemini_api_key or not vision_model:
-                await update.message.reply_text("এইআই থেকে রিপ্লাই আসবে\nছবি বিশ্লেষণের জন্য এপিআই কী প্রয়োজন! 📸")
-                return
-
-            await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
-            
-            # Get photo
-            photo = update.message.photo[-1]
-            photo_file = await photo.get_file()
-            
-            # Download and process
-            from io import BytesIO
-            photo_bytes = BytesIO()
-            await photo_file.download_to_memory(photo_bytes)
-            photo_bytes.seek(0)
-            
-            # Analyze with Gemini Vision
-            try:
-                # Convert to format Gemini can use
-                import PIL.Image
-                image = PIL.Image.open(photo_bytes)
-                
-                prompt = "এই ছবিটি বন্ধুত্বপূর্ণভাবে বর্ণনা করো। কী দেখছ? কথোপকথনের মতো বলো এবং ইমোজি ব্যবহার করো!"
-                response = vision_model.generate_content([prompt, image])
-                
-                await update.message.reply_text(f"এইআই থেকে রিপ্লাই আসবে\nআমি দেখতে পাচ্ছি:\n\n{response.text}")
-                
-            except Exception as e:
-                await update.message.reply_text("এইআই থেকে রিপ্লাই আসবে\nএই ছবিটি বিশ্লেষণ করতে পারিনি। আরেকটি চেষ্টা করো! 📸💕")
-                
-        except Exception as e:
-            logger.error(f"Photo handling error: {e}")
-            await update.message.reply_text("এইআই থেকে রিপ্লাই আসবে\nছবি প্রক্রিয়াকরণ ব্যর্থ! আবার চেষ্টা করো? 😊")
-
     async def clear_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Clear conversation"""
+        """Handle /clear command"""
         chat_id = update.effective_chat.id
         if chat_id in conversation_context:
             del conversation_context[chat_id]
-        await update.message.reply_text("এইআই থেকে রিপ্লাই আসবে\nমেমোরি ক্লিয়ার করা হয়েছে! নতুন করে শুরু 💕")
+        await update.message.reply_text("🧹 Conversation history cleared! Starting fresh.")
 
     async def status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Bot status"""
-        api_status = "প্রস্তুত" if current_gemini_api_key else "কনফিগার করা হয়নি"
-        chat_id = update.effective_chat.id
-        auto_mode = "চালু" if group_activity.get(chat_id, {}).get('auto_mode', True) else "বন্ধ"
+        """Handle /status command"""
+        global current_gemini_api_key, model
         
-        await update.message.reply_text(f"""
-এইআই থেকে রিপ্লাই আসবে
-I Master Tools স্ট্যাটাস:
+        api_status = "✅ Connected" if current_gemini_api_key and model else "❌ Not configured"
+        api_key_display = f"...{current_gemini_api_key[-8:]}" if current_gemini_api_key else "Not set"
+        
+        status_message = f"""
+🟢 Bot Status: Online
+🤖 Model: Gemini 1.5 Flash
+🔑 API Status: {api_status}
+🔐 API Key: {api_key_display}
+⏰ Current Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+💭 Active Conversations: {len(conversation_context)}
+👑 Admin ID: {ADMIN_USER_ID if ADMIN_USER_ID != 0 else 'Not set'}
 
-অনলাইন এবং প্রস্তুত!
-এপিআই: {api_status}  
-স্বয়ংক্রিয় রেসপন্স: {auto_mode}
-সক্রিয় চ্যাট: {len(conversation_context)}
-{datetime.now().strftime('%H:%M:%S')}
-
-সব ঠিক আছে! 😊💕
-        """)
+✅ All systems operational!
+        """
+        await update.message.reply_text(status_message)
 
     async def setadmin_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Set admin"""
+        """Handle /setadmin command - allows first user to become admin"""
         global ADMIN_USER_ID
+        
         user_id = update.effective_user.id
         
         if ADMIN_USER_ID == 0:
             ADMIN_USER_ID = user_id
-            await update.message.reply_text(f"এইআই থেকে রিপ্লাই আসবে\nতুমি এখন অ্যাডমিন! আইডি: {user_id}")
+            await update.message.reply_text(f"👑 You have been set as the bot admin!\nYour User ID: {user_id}")
+            logger.info(f"Admin set to user ID: {user_id}")
         else:
             if user_id == ADMIN_USER_ID:
-                await update.message.reply_text("এইআই থেকে রিপ্লাই আসবে\nতুমি ইতিমধ্যে অ্যাডমিন!")
+                await update.message.reply_text(f"👑 You are already the admin!\nYour User ID: {user_id}")
             else:
-                await update.message.reply_text("এইআই থেকে রিপ্লাই আসবে\nঅ্যাডমিন ইতিমধ্যে সেট করা হয়েছে!")
+                await update.message.reply_text("❌ Admin is already set. Only the current admin can manage the bot.")
 
     async def api_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Set API key"""
-        if update.effective_user.id != ADMIN_USER_ID:
-            await update.message.reply_text("এইআই থেকে রিপ্লাই আসবে\nশুধুমাত্র অ্যাডমিন!")
+        """Handle /api command to set Gemini API key"""
+        global current_gemini_api_key, model
+        
+        user_id = update.effective_user.id
+        
+        # Check if user is admin
+        if ADMIN_USER_ID == 0:
+            await update.message.reply_text("❌ No admin set. Use /setadmin first to become admin.")
+            return
+            
+        if user_id != ADMIN_USER_ID:
+            await update.message.reply_text("❌ This command is only available to the bot admin.")
             return
 
+        # Check if API key is provided
         if not context.args:
-            await update.message.reply_text("এইআই থেকে রিপ্লাই আসবে\nব্যবহার: /api তোমার_এপিআই_কী")
+            await update.message.reply_text("""
+❌ Please provide an API key.
+
+Usage: `/api your_gemini_api_key_here`
+
+To get a Gemini API key:
+1. Visit https://makersuite.google.com/app/apikey
+2. Create a new API key
+3. Use the command: /api YOUR_API_KEY
+
+⚠️ The message will be deleted after setting the API key for security.
+            """, parse_mode='Markdown')
             return
 
         api_key = ' '.join(context.args)
+        
+        # Validate API key format (basic check)
+        if len(api_key) < 20 or not api_key.startswith('AI'):
+            await update.message.reply_text("❌ Invalid API key format. Gemini API keys usually start with 'AI' and are longer than 20 characters.")
+            return
+
+        # Try to initialize Gemini with the new API key
         success, message = initialize_gemini_model(api_key)
         
-        # Delete command for security
+        # Delete the command message for security
         try:
             await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=update.message.message_id)
         except:
-            pass
+            pass  # Ignore if deletion fails
         
-        await update.effective_chat.send_message(f"এইআই থেকে রিপ্লাই আসবে\n{message}")
-
-    async def automode_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Toggle auto responses"""
-        if update.effective_user.id != ADMIN_USER_ID:
-            await update.message.reply_text("এইআই থেকে রিপ্লাই আসবে\nশুধুমাত্র অ্যাডমিন!")
-            return
-
-        chat_id = update.effective_chat.id
-        if chat_id not in group_activity:
-            group_activity[chat_id] = {'auto_mode': True}
-        
-        group_activity[chat_id]['auto_mode'] = not group_activity[chat_id]['auto_mode']
-        status = "চালু" if group_activity[chat_id]['auto_mode'] else "বন্ধ"
-        
-        await update.message.reply_text(f"এইআই থেকে রিপ্লাই আসবে\nস্বয়ংক্রিয় রেসপন্স {status}!")
-
-    def should_respond_to_message(self, message_text, chat_type, has_mention=False):
-        """Check if should respond"""
-        if chat_type == 'private':
-            return False  # No responses in private chats
-        
-        # Only respond if mentioned or replying to bot
-        if has_mention:
-            return True
-            
-        return False  # No random responses or trigger-based responses
+        if success:
+            await update.effective_chat.send_message(f"✅ Gemini API key updated successfully!\n🔑 Key: ...{api_key[-8:]}")
+            logger.info(f"Gemini API key updated by admin {user_id}")
+        else:
+            await update.effective_chat.send_message(f"❌ Failed to set API key: {message}")
+            logger.error(f"Failed to set API key: {message}")
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle text messages"""
+        """Handle regular text messages"""
         try:
             chat_id = update.effective_chat.id
             user_message = update.message.text
-            chat_type = update.effective_chat.type
             
-            # Block all private chat messages and redirect to group
-            if chat_type == 'private':
-                join_button = [[InlineKeyboardButton("VPSHUB_BD_CHAT-এ যোগ দাও", url="https://t.me/VPSHUB_BD_CHAT")]]
-                reply_markup = InlineKeyboardMarkup(join_button)
-                await update.message.reply_text(
-                    "হায়! আমি I Master Tools, এবং আমি কথা বলতে ভালোবাসি! আমাদের দারুণ টেলিগ্রাম গ্রুপে কথা বলি! সেখানে যোগ দাও মজার কথোপকথনের জন্য! 💬✨",
-                    reply_markup=reply_markup
-                )
-                return
-            
-            # Check for mentions in the message
-            entities = update.message.entities or []
-            has_bot_mention = False
-            has_any_mention = False
-            
-            for entity in entities:
-                if entity.type == "mention":
-                    mention_text = update.message.text[entity.offset:entity.offset + entity.length]
-                    if mention_text == f"@{context.bot.username}":
-                        has_bot_mention = True
-                    has_any_mention = True
-                elif entity.type == "text_mention":
-                    has_any_mention = True
-                    if entity.user.id == context.bot.id:
-                        has_bot_mention = True
-            
-            # Group response logic
-            if chat_type in ['group', 'supergroup']:
-                is_reply = (update.message.reply_to_message and 
-                           update.message.reply_to_message.from_user.id == context.bot.id)
+            # Check if this is a group chat and if the bot is mentioned or replied to
+            if update.effective_chat.type in ['group', 'supergroup']:
+                bot_username = context.bot.username
+                is_reply_to_bot = (update.message.reply_to_message and 
+                                 update.message.reply_to_message.from_user.id == context.bot.id)
+                is_mentioned = f"@{bot_username}" in user_message
                 
-                # Only respond if:
-                # 1. Bot is mentioned
-                # 2. Reply to bot
-                should_respond = has_bot_mention or is_reply
-                
-                if not should_respond:
-                    return
-                    
-                # Check auto mode
-                if not group_activity.get(chat_id, {}).get('auto_mode', True):
-                    # Still respond to direct mentions/replies even if auto mode is off
-                    if not (has_bot_mention or is_reply):
-                        return
+                if not (is_reply_to_bot or is_mentioned):
+                    return  # Don't respond to group messages unless mentioned or replied to
 
+            # Send typing action
             await context.bot.send_chat_action(chat_id=chat_id, action="typing")
 
-            # Get context
+            # Get or create conversation context
             if chat_id not in conversation_context:
                 conversation_context[chat_id] = []
 
-            username = update.effective_user.first_name or "ইউজার"
-            conversation_context[chat_id].append(f"{username}: {user_message}")
+            # Add user message to context
+            conversation_context[chat_id].append(f"User: {user_message}")
 
-            # Keep last 20 messages
+            # Keep only last 10 messages for context (to avoid token limits)
             if len(conversation_context[chat_id]) > 20:
                 conversation_context[chat_id] = conversation_context[chat_id][-20:]
 
+            # Prepare context for Gemini
             context_text = "\n".join(conversation_context[chat_id])
             
-            # Generate response
+            # Generate response using Gemini
             if current_gemini_api_key and model:
-                # Add context about mentions for better responses
-                mention_context = ""
-                if has_any_mention and not has_bot_mention:
-                    mention_context = " (ইউজার এই মেসেজে কাউকে মেনশন করেছে)"
-                elif has_bot_mention:
-                    mention_context = " (ইউজার তোমাকে সরাসরি মেনশন করেছে)"
-                    
-                response = await self.generate_gemini_response(
-                    context_text + mention_context, username, chat_type
-                )
+                response = await self.generate_gemini_response(context_text)
             else:
-                response = "আমার এআই মস্তিষ্ক সেটআপ প্রয়োজন! অ্যাডমিন /api কমান্ড ব্যবহার করো! 😅"
+                response = "❌ Gemini API is not configured. Admin can use /api command to set the API key."
 
-            conversation_context[chat_id].append(f"I Master Tools: {response}")
-            await update.message.reply_text(f"এইআই থেকে রিপ্লাই আসবে\n{response}")
+            # Add bot response to context
+            conversation_context[chat_id].append(f"Assistant: {response}")
+
+            # Send response
+            await update.message.reply_text(response)
 
         except Exception as e:
-            logger.error(f"Message error: {e}")
-            await update.message.reply_text("এইআই থেকে রিপ্লাই আসবে\nওহো! কিছু ভুল হয়েছে! 😅 আবার চেষ্টা করো?")
+            logger.error(f"Error handling message: {e}")
+            await update.message.reply_text("❌ Sorry, I encountered an error processing your message. Please try again.")
 
-    async def generate_gemini_response(self, prompt, username="ইউজার", chat_type="private"):
-        """Generate AI response"""
+    async def generate_gemini_response(self, prompt):
+        """Generate response using Gemini API"""
         try:
-            system_prompt = f"""তুমি I Master Tools, একটি বন্ধুত্বপূর্ণ এআই। শুধুমাত্র বাংলায় কথা বলো, ইউজার যেকোনো ভাষায় কথা বললেও। রেসপন্স ছোট এবং মিষ্টি রাখো।
+            # Add system instruction for better responses
+            full_prompt = f"""You are a helpful AI assistant in a Telegram chat. Be friendly, conversational, and helpful. 
 
-বৈশিষ্ট্য: বন্ধুত্বপূর্ণ, মজার, আবেগপ্রবণ, স্বাভাবিকভাবে ইমোজি ব্যবহার করো 💕
-চ্যাটের ধরন: {'গ্রুপ' if chat_type in ['group', 'supergroup'] else 'প্রাইভেট'}
-ইউজার: {username}
-
-কথোপকথন:
+Conversation history:
 {prompt}
 
-I Master Tools হিসেবে স্বাভাবিকভাবে রেসপন্স করো! আকর্ষণীয় কিন্তু সংক্ষিপ্ত হও।"""
+Respond naturally to the latest user message. Keep responses concise but informative."""
 
-            response = model.generate_content(system_prompt)
+            response = model.generate_content(full_prompt)
             return response.text
         
         except Exception as e:
-            logger.error(f"AI response error: {e}")
-            responses = [
-                f"দুঃখিত {username}! মস্তিষ্কে ত্রুটি 😅 আবার কী বলছিলে?",
-                "ওহো! মাথা ঘুরে গেছে 🤖💫 আবার বলো?",
-                "টেকনিক্যাল সমস্যা! 🛠️✨ আরেকবার চেষ্টা করো?"
-            ]
-            return random.choice(responses)
-
-    async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle button clicks"""
-        query = update.callback_query
-        await query.answer()
-        
-        if query.data == "help":
-            await query.message.edit_text("""
-এইআই থেকে রিপ্লাই আসবে
-দ্রুত সাহায্য:
-
-/translate - টেক্সট অনুবাদ
-/image - ছবি বিশ্লেষণ  
-/joke - জোক শোনো
-/story - গল্প তৈরি
-/math - গণিত সমাধান
-/weather - আবহাওয়ার তথ্য
-/remind - রিমাইন্ডার সেট
-
-গ্রুপে আমাকে মেনশন করে কথা বলো! 💕
-            """)
-        elif query.data == "features":
-            await query.message.edit_text("""
-এইআই থেকে রিপ্লাই আসবে
-আমার ফিচার:
-
-বাংলা↔ইংরেজি অনুবাদ
-এআই দিয়ে ছবি বিশ্লেষণ
-জোক ও বিনোদন  
-গল্প তৈরি
-গণিত সমাধানকারী
-আবহাওয়ার তথ্য
-স্মার্ট রিমাইন্ডার
-স্বাভাবিক কথোপকথন
-
-আমি সবসময় শিখছি! 💕
-            """)
+            logger.error(f"Error generating Gemini response: {e}")
+            return "❌ Sorry, I'm having trouble generating a response right now. Please try again in a moment."
 
     async def error_handler(self, update: object, context: ContextTypes.DEFAULT_TYPE):
         """Handle errors"""
-        logger.error(f"Update error: {context.error}")
+        logger.error(f"Exception while handling an update: {context.error}")
 
     def run(self):
-        """Start bot"""
-        logger.info("Starting bot...")
+        """Start the bot"""
+        logger.info("Starting Telegram Bot...")
+        
+        # For Railway deployment, we'll use polling
         self.application.run_polling(
             allowed_updates=Update.ALL_TYPES,
             drop_pending_updates=True
@@ -663,10 +290,17 @@ I Master Tools হিসেবে স্বাভাবিকভাবে রে
 def main():
     """Main function"""
     if not TELEGRAM_BOT_TOKEN:
-        logger.error("No bot token!")
+        logger.error("TELEGRAM_BOT_TOKEN not provided!")
         return
 
-    logger.info("Bot starting...")
+    logger.info("Starting Telegram Bot...")
+    logger.info(f"Admin User ID: {ADMIN_USER_ID}")
+    
+    if current_gemini_api_key:
+        logger.info("Gemini API configured and ready")
+    else:
+        logger.warning("Gemini API not configured. Use /setadmin and /api commands to set up.")
+
     bot = TelegramGeminiBot()
     bot.run()
 
