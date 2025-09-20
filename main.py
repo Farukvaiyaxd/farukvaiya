@@ -30,8 +30,8 @@ last_emoji_index = -1
 
 # উপলব্ধ মডেল
 AVAILABLE_MODELS = [
-    {'name': 'gemini-1.5-flash', 'display': 'Gemini 1.5 Flash', 'description': '🎯 Stable & reliable'},
-    {'name': 'gemini-1.5-pro', 'display': 'Gemini 1.5 Pro', 'description': '🧠 Most intelligent'},
+    {'name': 'gemini-1.5-flash', 'display': 'Gemini 1.5 Flash', 'description': '🎯 স্থিতিশীল ও নির্ভরযোগ্য'},
+    {'name': 'gemini-1.5-pro', 'display': 'Gemini 1.5 Pro', 'description': '🧠 সবচেয়ে বুদ্ধিমান'},
 ]
 
 # প্রজাপতি ইমোজি
@@ -297,7 +297,7 @@ class TelegramGeminiBot:
         last_active_str = last_active.strftime('%Y-%m-%d %H:%M:%S') if last_active else "রেকর্ড করা নেই"
         total_messages = user_statistics.get(user_id, {}).get('messages', 0)
         daily_messages = user_statistics.get(user_id, {}).get('messages', 0)
-        hourly_count = sum(1 for msg_time in [user_statistics.get(user_id, {}).get('last_active', datetime.now())] if (datetime.now() - msg_time).seconds < 3600)
+        hourly_count = sum(1 for msg_time in user_statistics.get(user_id, {}).get('message_timestamps', []) if (datetime.now(pytz.UTC) - msg_time).total_seconds() < 3600)
         try:
             chat_member = await context.bot.get_chat_member(chat_id=update.effective_chat.id, user_id=user_id)
             bio = chat_member.user.bio if hasattr(chat_member.user, 'bio') and chat_member.user.bio else "সেট করা নেই"
@@ -440,7 +440,7 @@ class TelegramGeminiBot:
 🔐 জেমিনাই API কী: {gemini_api_key_display}
 🌐 ডিফল্ট AI ভাষা: {current_language}
 🎯 অটো-রেসপন্স: {auto_mode_status}
-⏰ বর্তমান সময়: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+⏰ বর্তমান সময়: {datetime.now(pytz.UTC).strftime('%Y-%m-%d %H:%M:%S')}
 💭 সক্রিয় কথোপকথন: {len(conversation_context)}
 👑 অ্যাডমিন আইডি: {ADMIN_USER_ID if ADMIN_USER_ID != 0 else 'সেট করা নেই'}
 ✨ সব সিস্টেম প্রস্তুত! আমি আজ খুব ভালো মুডে আছি! 😊
@@ -504,9 +504,9 @@ class TelegramGeminiBot:
                 reply_markup=reply_markup
             )
             return
-        start_time = datetime.now()
+        start_time = datetime.now(pytz.UTC)
         message = await update.message.reply_text("পং! 🏓")
-        end_time = datetime.now()
+        end_time = datetime.now(pytz.UTC)
         latency = (end_time - start_time).total_seconds() * 1000
         await message.edit_text(f"পং! 🏓\nলেটেন্সি: {latency:.2f} মিলিসেকেন্ড")
 
@@ -561,7 +561,7 @@ class TelegramGeminiBot:
         if ADMIN_USER_ID == 0 or user_id != ADMIN_USER_ID:
             await update.message.reply_text("❌ এই কমান্ড শুধু অ্যাডমিনের জন্য।")
             return
-        active_users = sum(1 for stats in user_statistics.values() if (datetime.now() - stats['last_active']).days <= 7)
+        active_users = sum(1 for stats in user_statistics.values() if (datetime.now(pytz.UTC) - stats['last_active']).days <= 7)
         total_messages = sum(stats['messages'] for stats in user_statistics.values())
         top_apis = sorted(api_usage.items(), key=lambda x: x[1], reverse=True)[:5]
         stats_message = f"📊 মাস্টার টুলস স্ট্যাটিস্টিক্স:\n\n👥 মোট ইউজার: {len(user_statistics)}\n🔥 সক্রিয় ইউজার (৭ দিন): {active_users}\n💬 মোট মেসেজ: {total_messages}\n\n🔧 শীর্ষ API মেথড:\n"
@@ -702,13 +702,26 @@ class TelegramGeminiBot:
                     reply_markup=reply_markup
                 )
                 return
+            # ইউজার স্ট্যাটিস্টিক্স ইনিশিয়ালাইজ
             if user_id not in user_statistics:
-                user_statistics[user_id] = {'messages': 0, 'last_active': datetime.now(), 'api_calls': 0}
+                user_statistics[user_id] = {
+                    'messages': 0,
+                    'last_active': datetime.now(pytz.UTC),
+                    'api_calls': 0,
+                    'message_timestamps': []  # নতুন: মেসেজ টাইমস্ট্যাম্প স্টোর করার জন্য
+                }
+            # মেসেজ গণনা এবং টাইমস্ট্যাম্প আপডেট
             user_statistics[user_id]['messages'] += 1
-            user_statistics[user_id]['last_active'] = datetime.now()
-            if (datetime.now() - user_statistics[user_id]['last_active'].replace(hour=0, minute=0, second=0, microsecond=0)).days > 0:
+            user_statistics[user_id]['last_active'] = datetime.now(pytz.UTC)
+            user_statistics[user_id]['message_timestamps'].append(datetime.now(pytz.UTC))
+            # দৈনিক মেসেজ রিসেট
+            if (datetime.now(pytz.UTC) - user_statistics[user_id]['last_active'].replace(hour=0, minute=0, second=0, microsecond=0)).days > 0:
                 user_statistics[user_id]['messages'] = 1
-            hourly_count = sum(1 for msg_time in [user_statistics[user_id]['last_active']] if (datetime.now() - msg_time).seconds < 3600)
+                user_statistics[user_id]['message_timestamps'] = [t for t in user_statistics[user_id]['message_timestamps'] if (datetime.now(pytz.UTC) - t).days == 0]
+            # ঘণ্টায় মেসেজ গণনা (লাইন 399 এর ফিক্স)
+            now = datetime.now(pytz.UTC)
+            hourly_count = sum(1 for msg_time in user_statistics[user_id]['message_timestamps'] if (now - msg_time).total_seconds() < 3600)
+            # লিমিট চেক
             if user_statistics[user_id]['messages'] > user_limits['daily_messages']:
                 await update.message.reply_text(f"❌ দৈনিক মেসেজ লিমিট পৌঁছে গেছে ({user_limits['daily_messages']})। কাল আবার চেষ্টা করুন!")
                 return
@@ -746,7 +759,7 @@ class TelegramGeminiBot:
                 return
             response = await self.generate_response(context_text, username, chat_type)
             conversation_context[chat_id].append(f"মাস্টার টুলস: {response}")
-            group_activity[chat_id]['last_response'] = datetime.now().timestamp()
+            group_activity[chat_id]['last_response'] = datetime.now(pytz.UTC).timestamp()
             await update.message.reply_text(response, parse_mode='Markdown')
         except Exception as e:
             logger.error(f"মেসেজ হ্যান্ডলিংয়ে ত্রুটি: {e}")
@@ -765,12 +778,11 @@ class TelegramGeminiBot:
     async def run(self):
         await self.application.initialize()
         await self.application.start()
-        await self.application.updater.start_polling()
+        await self.application.updater.start_polling(drop_pending_updates=True)
         logger.info("বট শুরু হয়েছে। পোলিং শুরু...")
-        await self.application.updater.start_polling(drop_pending_updates=True)  # পুরানো আপডেট ড্রপ করুন
         while True:
             try:
-                await asyncio.sleep(3600)  # Railway-এর জন্য অপ্রয়োজনীয়, তবুও রাখা হয়েছে
+                await asyncio.sleep(3600)
             except asyncio.CancelledError:
                 break
 
