@@ -1,7 +1,7 @@
 import os
 
 # Bot Configuration
-TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '8401694830:AAHV0dihb6LBZwTFqlQgw1k0AlNEiqdHZos')
+TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '8380869007:AAEb1oevYkGl_z1PfXhUiuNMmH9Gg9aBbI4')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 ADMIN_USER_ID = int(os.getenv('ADMIN_USER_ID', '0'))
 PORT = int(os.getenv('PORT', 8000))
