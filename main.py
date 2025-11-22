@@ -16,7 +16,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Configuration
-TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '8380869007:AAGu7e41JJVU8aXG5wqXtCMUVKcCmmrp_gg')
+TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '8349000545:AAF_EwK6dkghj5I08Ab56ROk3DZ7YvAyDvE')
 REMOVE_BG_API_KEY = '15smbepCfMYoHh7D7Cnzj9Z6'
 WEATHER_API_KEY = 'c1794a3c9faa01e4b5142313d4191ef8'
 ADMIN_USER_ID = int(os.getenv('ADMIN_USER_ID', '7835226724'))
