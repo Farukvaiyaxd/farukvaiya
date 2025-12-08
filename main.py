@@ -2,11 +2,12 @@ import os
 import logging
 import requests
 import random
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+import re
 import asyncio
 from datetime import datetime, timedelta, timezone
-import re
+from io import BytesIO
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 # Configure logging
 logging.basicConfig(
@@ -16,7 +17,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Configuration
-TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '8349000545:AAF_EwK6dkghj5I08Ab56ROk3DZ7YvAyDvE')
+TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '8259268254:AAHcZBDXX4BQ0tWHs3Y95n2mLLiJFaQtRbQ')
 REMOVE_BG_API_KEY = '15smbepCfMYoHh7D7Cnzj9Z6'
 WEATHER_API_KEY = 'c1794a3c9faa01e4b5142313d4191ef8'
 ADMIN_USER_ID = int(os.getenv('ADMIN_USER_ID', '7835226724'))
@@ -34,19 +35,24 @@ removebg_state = {}
 # Bangladesh time zone (UTC+6)
 BDT_TIMEZONE = timezone(timedelta(hours=6))
 
+# ==============================================================================
+# --- CORE API & UTILITY FUNCTIONS ---
+# ==============================================================================
+
 def fetch_info(prompt_text):
     """
-    Fetch information for any prompt from the API.
+    Fetch general information for any prompt from the external API.
     """
     url = "https://pplx.itxcyropes.workers.dev/"
     params = {"prompt": prompt_text}
 
     try:
-        response = requests.get(url, params=params)
+        response = requests.get(url, params=params, timeout=30)
         response.raise_for_status()
         data = response.json()
         return data
     except requests.exceptions.RequestException as e:
+        logger.error(f"Error fetching info from external API: {e}")
         return {"error": str(e)}
 
 async def validate_bin(bin_number: str, api_key: str):
@@ -54,7 +60,7 @@ async def validate_bin(bin_number: str, api_key: str):
     base_url = "https://api.iinapi.com/iin"
     params = {"key": api_key, "digits": bin_number}
     try:
-        response = requests.get(base_url, params=params)
+        response = requests.get(base_url, params=params, timeout=15)
         response.raise_for_status()
         data = response.json()
         if data.get("valid", False):
@@ -79,9 +85,9 @@ async def validate_bin(bin_number: str, api_key: str):
 
 async def search_yts_multiple(query: str, limit: int = 5):
     """Search YouTube videos using abhi-api"""
-    url = f"https://abhi-api.vercel.app/api/search/yts?text={query.replace(' ', '+')}"
+    url = f"https://abhi-api.vercel.app/api/search/yts?text={requests.utils.quote(query)}"
     try:
-        response = requests.get(url)
+        response = requests.get(url, timeout=20)
         response.raise_for_status()
         data = response.json()
         if data.get("status") and data.get("result"):
@@ -115,7 +121,7 @@ async def get_ip_info(ip_address: str):
     """Fetch IP information using ipinfo.io"""
     url = f"https://ipinfo.io/{ip_address}/json"
     try:
-        response = requests.get(url)
+        response = requests.get(url, timeout=10)
         response.raise_for_status()
         data = response.json()
         return f"""
@@ -138,9 +144,9 @@ async def get_ip_info(ip_address: str):
 
 async def get_country_info(country_name: str):
     """Fetch country information using restcountries.com"""
-    url = f"https://restcountries.com/v3.1/name/{country_name}"
+    url = f"https://restcountries.com/v3.1/name/{requests.utils.quote(country_name)}"
     try:
-        response = requests.get(url)
+        response = requests.get(url, timeout=15)
         response.raise_for_status()
         country_data = response.json()
         if country_data:
@@ -152,6 +158,8 @@ async def get_country_info(country_name: str):
                 currency_symbol = country['currencies'][first_currency].get('symbol', '')
                 currency_info = f"{currency_name} ({currency_symbol})"
             capital = country.get('capital', ['N/A'])[0] if isinstance(country.get('capital'), list) else country.get('capital', 'N/A')
+            languages = ', '.join(country.get('languages', {}).values()) if country.get('languages') else 'N/A'
+
             return f"""
 ━━━━━━━━━━━━━━━━━━━━━━━━
 🌍 Country Information for '{country_name.title()}'
@@ -161,7 +169,7 @@ async def get_country_info(country_name: str):
 🏛️ Capital: {capital}
 👨‍👩‍👧‍👦 Population: {country.get('population', 'N/A')}
 📏 Area: {country.get('area', 'N/A')} km²
-🗣️ Languages: {', '.join(country.get('languages', {}).values()) if country.get('languages') else 'N/A'}
+🗣️ Languages: {languages}
 🚩 Flag: {country.get('flag', 'N/A')}
 💰 Currency: {currency_info}
 🌐 Region: {country.get('region', 'N/A')}
@@ -178,7 +186,7 @@ async def get_weather_info(location: str):
     url = "http://api.weatherstack.com/current"
     params = {'access_key': WEATHER_API_KEY, 'query': location}
     try:
-        response = requests.get(url, params=params)
+        response = requests.get(url, params=params, timeout=10)
         response.raise_for_status()
         data = response.json()
         if 'current' in data:
@@ -219,9 +227,9 @@ async def remove_background(image_data: bytes, chat_id: int):
 
 async def generate_anime_image(prompt: str, chat_id: int):
     """Generate an anime-style image using the provided API"""
-    url = f"https://flux-schnell.hello-kaiIddo.workers.dev/img?prompt={prompt.replace(' ', '+')}"
+    url = f"https://flux-schnell.hello-kaiIddo.workers.dev/img?prompt={requests.utils.quote(prompt)}"
     try:
-        response = requests.get(url)
+        response = requests.get(url, timeout=45)
         if response.status_code == 200:
             return True, response.content
         logger.error(f"Anime image generation error for chat {chat_id}: {response.status_code} - {response.text}")
@@ -232,10 +240,10 @@ async def generate_anime_image(prompt: str, chat_id: int):
 
 async def search_spotify(song_name: str):
     """Search for songs on Spotify using the provided API"""
-    query = song_name.replace(" ", "%20")
+    query = requests.utils.quote(song_name)
     url = f"https://spotify-search.terafast.workers.dev/search?q={query}"
     try:
-        response = requests.get(url)
+        response = requests.get(url, timeout=15)
         if response.status_code == 200:
             data = response.json()
             logger.debug(f"Spotify API response: {data}")
@@ -254,6 +262,9 @@ async def format_spotify_results(data):
     if "results" in data and data["results"]:
         track = data["results"][0]  # Only take the first result
         album_art_url = track.get("album_art", None)
+        duration_ms = track.get("duration_ms", 0)
+        duration_sec = int(duration_ms / 1000)
+        
         output_message = f"""
 ━━━━━━━━━━━━━━━━━━━━━━━━
 🎵 Spotify Search Result
@@ -265,13 +276,108 @@ async def format_spotify_results(data):
 💿 Album: {track.get("album", "Unknown")}
 🆔 Track ID: {track.get("track_id", "Unknown")}
 🔗 Spotify Link: {track.get("spotify_url", "Unknown")}
-⏱️ Duration: {(track.get("duration_ms", 0) / 1000):.0f} seconds
+⏱️ Duration: {duration_sec} seconds
 🎧 Preview: {track.get("preview_url", "No preview available")}
 ━━━━━━━━━━━━━━━━━━━━━━━━
 """
         logger.debug(f"Formatted result for track: {track.get('track_name', 'Unknown')}")
         return output_message, album_art_url
     return "No tracks found. Please try a different song name.", None
+
+async def download_youtube_audio(query_or_url: str, chat_id: int):
+    """
+    Searches YouTube and fetches the MP3 download link for the first result.
+    """
+    search_api_url = "https://yt-api-flax.vercel.app/search"
+    download_api_url = "https://socialdown.itz-ashlynn.workers.dev/yt"
+
+    final_video_url = query_or_url
+    title = "Unknown Title"
+    duration_str = "N/A"
+    thumbnail_url = None
+    views_str = "N/A"
+    
+    is_url = re.search(r'youtu\.be|youtube\.com', query_or_url, re.IGNORECASE)
+
+    try:
+        if not is_url:
+            # Step 1: Search YouTube
+            search_r = requests.get(search_api_url, params={"q": query_or_url}, timeout=30)
+            search_r.raise_for_status()
+            search_data = search_r.json()
+
+            if search_data.get("result") and len(search_data["result"]) > 0:
+                first_result = search_data["result"][0]
+                final_video_url = first_result.get("link")
+                title = first_result.get("title", "Unknown Title")
+                duration_str = first_result.get("duration", "N/A")
+                thumbnail_url = first_result.get("imageUrl")
+                views_raw = first_result.get("views", 0)
+                views_str = f"{int(views_raw):,} views" if str(views_raw).isdigit() else "N/A"
+            else:
+                return False, f"❌ Search Failed: No results found for '{query_or_url}'.", None
+
+        if not final_video_url:
+            return False, "❌ Error: Invalid YouTube URL or search result.", None
+
+        # Step 2: Get MP3 Download Link
+        download_params = {"url": final_video_url, "format": "mp3"}
+        r = requests.get(download_api_url, params=download_params, timeout=90)
+        r.raise_for_status()
+        data = r.json()
+
+        if not data.get("success") or not data.get("data") or not data["data"][0].get("downloadUrl"):
+            reason = data.get("error") or "Download link generation failed."
+            return False, f"❌ Download Failed: {reason}", None
+
+        track_data = data["data"][0]
+        dl_url = track_data["downloadUrl"]
+        
+        # Final metadata consolidation
+        if duration_str == "N/A":
+             duration_str = track_data.get("duration", "N/A")
+        if thumbnail_url is None:
+             thumbnail_url = track_data.get("thumbnail")
+        if title == "Unknown Title":
+             title = track_data.get("title", title)
+
+        # Step 3: Stream Download
+        # Inform the user before a potentially long download
+        m_downloading = await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"⬇️ Starting download for **{title}**...",
+            reply_to_message_id=chat_id # Not directly available here, requires message context
+        )
+
+        r_dl = requests.get(dl_url, stream=True, timeout=600)
+        r_dl.raise_for_status()
+        
+        # Prepare BytesIO object for Telegram upload
+        audio_file = BytesIO(r_dl.content)
+        audio_file.name = f"{title}.mp3"
+        
+        caption = f"""
+🎵 **YouTube Audio Downloaded!**
+━━━━━━━━━━━━━━━━━━━━
+📌 **Title:** {title}
+⏱ **Duration:** {duration_str}
+👁️‍🗨️ **Views:** {views_str}
+🔗 **Source:** [Watch on YouTube]({final_video_url})
+━━━━━━━━━━━━━━━━━━━━
+"""
+        
+        return True, caption, audio_file
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"YouTube Audio Download Error (Chat {chat_id}): {e}")
+        return False, "❌ Connection Error: External API failed to respond or file download timed out.", None
+    except Exception as e:
+        logger.error(f"YouTube Audio General Error (Chat {chat_id}): {e}")
+        return False, f"❌ System Error: An unexpected error occurred. ({str(e)})", None
+
+# ==============================================================================
+# --- BOT CLASS & HANDLERS ---
+# ==============================================================================
 
 class TelegramGeminiBot:
     def __init__(self):
@@ -296,6 +402,9 @@ class TelegramGeminiBot:
         self.application.add_handler(CommandHandler("img", self.img_command))
         self.application.add_handler(CommandHandler("spotify", self.spotify_command))
         self.application.add_handler(CommandHandler("world", self.world_command))
+        # === NEW YOUTUBE AUDIO DOWNLOAD COMMAND ===
+        self.application.add_handler(CommandHandler("yta", self.yta_command))
+        
         self.application.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND, self.handle_photo))
         self.application.add_error_handler(self.error_handler)
 
@@ -311,9 +420,14 @@ Hello, thanks for wanting to chat with me! I'm I Master Tools, your friendly com
         """Handle /start command - restricted to admin only"""
         user_id = update.effective_user.id
         username = update.effective_user.first_name or "User"
+        if update.effective_chat.type == 'private' and user_id != ADMIN_USER_ID:
+            response, reply_markup = await self.get_private_chat_redirect()
+            await update.message.reply_text(response, reply_markup=reply_markup)
+            return
         if user_id != ADMIN_USER_ID:
             await update.message.reply_text("⛔ Sorry, the /start command is restricted to the admin only.")
             return
+        
         keyboard = [[InlineKeyboardButton("Join VPSHUB_BD_CHAT", url="https://t.me/VPSHUB_BD_CHAT")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         welcome_message = f"""
@@ -327,6 +441,7 @@ Available commands:
 - /info: Show user profile information
 - /validatebin <bin_number>: Validate a BIN number
 - /yts <query> [limit]: Search YouTube videos
+- /yta <query/url>: **Download YouTube Audio (MP3).**
 - /ipinfo <ip_address>: Fetch IP address information
 - /countryinfo <country_name>: Fetch country information (use English names, e.g., 'Bangladesh')
 - /weather <location>: Fetch current weather information
@@ -344,9 +459,14 @@ In groups, mention @IMasterTools or reply to my messages to get a response. I'm 
         """Handle /help command - restricted to admin only"""
         user_id = update.effective_user.id
         username = update.effective_user.first_name or "User"
+        if update.effective_chat.type == 'private' and user_id != ADMIN_USER_ID:
+            response, reply_markup = await self.get_private_chat_redirect()
+            await update.message.reply_text(response, reply_markup=reply_markup)
+            return
         if user_id != ADMIN_USER_ID:
             await update.message.reply_text("⛔ Sorry, the /help command is restricted to the admin only.")
             return
+            
         keyboard = [[InlineKeyboardButton("Join VPSHUB_BD_CHAT", url="https://t.me/VPSHUB_BD_CHAT")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         help_message = f"""
@@ -355,8 +475,6 @@ Hello {username}! I'm I Master Tools, your friendly companion designed to make c
 How I work:
 - In groups, mention @IMasterTools or reply to my messages to get a response
 - In private chats, only the admin can access all features
-- I provide accurate, beginner-friendly solutions
-- I'm designed to be friendly, helpful, and human-like
 
 Available commands:
 - /start: Show welcome message with group link
@@ -367,6 +485,7 @@ Available commands:
 - /info: Show user profile information
 - /validatebin <bin_number>: Validate a BIN number
 - /yts <query> [limit]: Search YouTube videos
+- /yta <query/url>: **Download YouTube Audio (MP3).**
 - /ipinfo <ip_address>: Fetch IP address information
 - /countryinfo <country_name>: Fetch country information (use English names, e.g., 'Bangladesh')
 - /weather <location>: Fetch current weather information
@@ -390,23 +509,27 @@ My personality:
         user_id = update.effective_user.id
         chat_id = update.effective_chat.id
         chat_type = update.effective_chat.type
+        
+        # Access control
         if chat_type == 'private' and user_id != ADMIN_USER_ID:
             response, reply_markup = await self.get_private_chat_redirect()
             await update.message.reply_text(response, reply_markup=reply_markup)
             return
+            
         if not context.args:
             await update.message.reply_text("Usage: /world <prompt>\nExample: /world What is the capital of France?")
             return
+            
         prompt = ' '.join(context.args)
-        # Send typing action to indicate processing
+        
         await context.bot.send_chat_action(chat_id=chat_id, action="typing")
-        # Send preliminary "Searching..." message with loading dots
+        
         searching_message = await context.bot.send_message(
             chat_id=chat_id,
             text="🔍 Searching for information...\nLoading.",
             reply_to_message_id=update.message.message_id
         )
-        # Simulate progress: Update message every 1 second to add dots
+        
         loading_steps = [
             "🔍 Searching for information...\nLoading.",
             "🔍 Searching for information...\nLoading..",
@@ -414,8 +537,9 @@ My personality:
             "🔍 Searching for information...\nLoading....",
             "🔍 Searching for information...\nLoading....."
         ]
+        
         try:
-            for step in loading_steps[1:]:  # Skip the first one since it's already sent
+            for step in loading_steps[1:]:
                 await context.bot.edit_message_text(
                     chat_id=chat_id,
                     message_id=searching_message.message_id,
@@ -424,11 +548,11 @@ My personality:
                 await asyncio.sleep(1)
         except Exception as e:
             logger.error(f"Error during loading animation: {e}")
-            # If animation fails, just continue without deleting or further edits
             pass
-        # Now fetch the actual info after progress completes
+            
         try:
-            result = fetch_info(prompt)
+            result = fetch_info(prompt) 
+            
             if "error" in result:
                 response_message = f"""
 ━━━━━━━━━━━━━━━━━━━━━━━━
@@ -440,10 +564,9 @@ Please try with a different question.
 ━━━━━━━━━━━━━━━━━━━━━━━━
 """
             else:
-                # Get the API response and remove number sequences like [2][3] or [1][3][5][10]
                 info = result.get('response', 'No information found.')
-                # Remove patterns like [x][y]... using regex
                 info = re.sub(r'\[\d+\](?:\[\d+\])*', '', info)
+                
                 response_message = f"""
 ━━━━━━━━━━━━━━━━━━━━━━━━
 🔍 Information
@@ -457,11 +580,12 @@ Please try with a different question.
                 text=response_message,
                 reply_to_message_id=update.message.message_id
             )
-            # Delete the "Searching..." message if it exists
+            
             try:
                 await context.bot.delete_message(chat_id=chat_id, message_id=searching_message.message_id)
             except Exception as delete_e:
                 logger.error(f"Error deleting loading message: {delete_e}")
+                
         except Exception as e:
             logger.error(f"Error fetching info for chat {chat_id}: {e}")
             try:
@@ -477,7 +601,6 @@ Please try again!
 """,
                     reply_to_message_id=update.message.message_id
                 )
-                # Delete the "Searching..." message if it exists
                 await context.bot.delete_message(chat_id=chat_id, message_id=searching_message.message_id)
             except Exception as send_e:
                 logger.error(f"Error sending error message: {send_e}")
@@ -487,6 +610,7 @@ Please try again!
         user_id = update.effective_user.id
         chat_id = update.effective_chat.id
         chat_type = update.effective_chat.type
+        
         if chat_type == 'private' and user_id != ADMIN_USER_ID:
             response, reply_markup = await self.get_private_chat_redirect()
             await update.message.reply_text(response, reply_markup=reply_markup)
@@ -501,27 +625,36 @@ Please try again!
         """Handle /checkmail command"""
         user_id = update.effective_user.id
         chat_type = update.effective_chat.type
+        
         if chat_type == 'private' and user_id != ADMIN_USER_ID:
             response, reply_markup = await self.get_private_chat_redirect()
             await update.message.reply_text(response, reply_markup=reply_markup)
         else:
             try:
-                u = 'txoguqa'
+                u = 'txoguqa' 
                 d = random.choice(['mailto.plus', 'fexpost.com', 'fexbox.org', 'rover.info'])
                 email = f'{u}@{d}'
+                
                 response = requests.get(
                     'https://tempmail.plus/api/mails',
                     params={'email': email, 'limit': 20, 'epin': ''},
                     cookies={'email': email},
                     headers={'user-agent': 'Mozilla/5.0'}
                 )
+                response.raise_for_status()
+                
                 mail_list = response.json().get('mail_list', [])
                 if not mail_list:
                     await update.message.reply_text(f"No emails found in {email} inbox. Try again later?")
                     return
+                
                 subjects = [m['subject'] for m in mail_list]
-                response_text = f"{email} inbox emails:\n\n" + "\n".join(subjects)
-                await update.message.reply_text(response_text)
+                response_text = f"Emails found in `{email}` inbox:\n\n" + "\n".join(subjects)
+                await update.message.reply_text(response_text, parse_mode='Markdown')
+                
+            except requests.exceptions.RequestException as e:
+                 logger.error(f"Error checking email API: {e}")
+                 await update.message.reply_text("Problem connecting to the email API. Try again?")
             except Exception as e:
                 logger.error(f"Error checking email: {e}")
                 await update.message.reply_text("Problem checking email. Try again?")
@@ -529,8 +662,8 @@ Please try again!
     async def status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /status command"""
         user_id = update.effective_user.id
-        chat_id = update.effective_chat.id
         chat_type = update.effective_chat.type
+        
         if chat_type == 'private' and user_id != ADMIN_USER_ID:
             response, reply_markup = await self.get_private_chat_redirect()
             await update.message.reply_text(response, reply_markup=reply_markup)
@@ -538,21 +671,22 @@ Please try again!
             status_message = f"""
 I Master Tools Status Report:
 
-Bot Status: Online
-Model: None (Basic Response Mode)
+Bot Status: **Online**
+Model: **None** (Basic Response Mode)
 Group Response: Only on mention or reply
 Current Time: {datetime.now(BDT_TIMEZONE).strftime('%Y-%m-%d %H:%M:%S +06')}
 Active Conversations: {len(conversation_context)}
-Admin ID: {ADMIN_USER_ID if ADMIN_USER_ID != 0 else 'Not Set'}
+Admin ID: `{ADMIN_USER_ID if ADMIN_USER_ID != 0 else 'Not Set'}`
 
 All systems ready!
             """
-            await update.message.reply_text(status_message)
+            await update.message.reply_text(status_message, parse_mode='Markdown')
 
     async def setmodel_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /setmodel command"""
+        """Handle /setmodel command (Currently a placeholder)"""
         user_id = update.effective_user.id
         chat_type = update.effective_chat.type
+        
         if chat_type == 'private' and user_id != ADMIN_USER_ID:
             response, reply_markup = await self.get_private_chat_redirect()
             await update.message.reply_text(response, reply_markup=reply_markup)
@@ -565,12 +699,13 @@ All systems ready!
         chat_id = update.effective_chat.id
         chat_type = update.effective_chat.type
         user = update.effective_user
-        chat = update.effective_chat
         bot = context.bot
+        
         if chat_type == 'private' and user_id != ADMIN_USER_ID:
             response, reply_markup = await self.get_private_chat_redirect()
             await update.message.reply_text(response, reply_markup=reply_markup)
             return
+            
         is_private = chat_type == "private"
         full_name = user.first_name or "No name"
         if user.last_name:
@@ -578,13 +713,15 @@ All systems ready!
         username = f"@{user.username}" if user.username else "None"
         premium = "Yes" if user.is_premium else "No"
         permalink = f"[Click here](tg://user?id={user_id})"
-        chat_id_display = f"{chat_id}" if not is_private else "-"
+        chat_id_display = f"`{chat_id}`" if not is_private else "-"
+        
         data_center = "Unknown"
         created_on = "Unknown"
         account_age = "Unknown"
         account_frozen = "No"
         last_seen = "Recently"
         status = "Private Chat" if is_private else "Unknown"
+        
         if not is_private:
             try:
                 member = await bot.get_chat_member(chat_id=chat_id, user_id=user_id)
@@ -592,6 +729,7 @@ All systems ready!
             except Exception as e:
                 logger.error(f"Error checking group role: {e}")
                 status = "Unknown"
+                
         info_text = f"""
 🔍 *User Profile Information* 📋
 ━━━━━━━━━━━━━━━━━━━━━━━━
@@ -609,18 +747,19 @@ All systems ready!
 ━━━━━━━━━━━━━━━━━━━━━━━━
 👁 *Thank you for using our tools* ✅
 """
-        keyboard = [[InlineKeyboardButton("View Profile", url=f"tg://user?id={user_id}")]] if user.username else []
+        keyboard = [[InlineKeyboardButton("View Profile", url=f"tg://user?id={user_id}")]]
+        
         try:
             photos = await bot.get_user_profile_photos(user_id, limit=1)
             if photos.total_count > 0:
-                file_id = photos.photos[0][0].file_id
+                file_id = photos.photos[0][-1].file_id
                 await bot.send_photo(
                     chat_id=chat_id,
                     photo=file_id,
                     caption=info_text,
                     parse_mode="Markdown",
                     reply_to_message_id=update.message.message_id,
-                    reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None
+                    reply_markup=InlineKeyboardMarkup(keyboard)
                 )
             else:
                 await bot.send_message(
@@ -628,7 +767,8 @@ All systems ready!
                     text=info_text,
                     parse_mode="Markdown",
                     reply_to_message_id=update.message.message_id,
-                    reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                    disable_web_page_preview=True
                 )
         except Exception as e:
             logger.error(f"Error sending profile photo: {e}")
@@ -637,7 +777,8 @@ All systems ready!
                 text=info_text,
                 parse_mode="Markdown",
                 reply_to_message_id=update.message.message_id,
-                reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                disable_web_page_preview=True
             )
 
     async def validatebin_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -645,15 +786,21 @@ All systems ready!
         user_id = update.effective_user.id
         chat_id = update.effective_chat.id
         chat_type = update.effective_chat.type
+        
         if chat_type == 'private' and user_id != ADMIN_USER_ID:
             response, reply_markup = await self.get_private_chat_redirect()
             await update.message.reply_text(response, reply_markup=reply_markup)
             return
+            
         if not context.args:
             await update.message.reply_text("Usage: /validatebin <bin_number>\nExample: /validatebin 324000")
             return
+            
         bin_number = context.args[0]
+        await context.bot.send_chat_action(chat_id=chat_id, action="typing")
+        
         response_message = await validate_bin(bin_number, BIN_API_KEY)
+        
         await context.bot.send_message(
             chat_id=chat_id,
             text=response_message,
@@ -661,40 +808,118 @@ All systems ready!
         )
 
     async def yts_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /yts command"""
+        """Handle /yts command for YouTube search"""
         user_id = update.effective_user.id
         chat_id = update.effective_chat.id
         chat_type = update.effective_chat.type
+        
         if chat_type == 'private' and user_id != ADMIN_USER_ID:
             response, reply_markup = await self.get_private_chat_redirect()
             await update.message.reply_text(response, reply_markup=reply_markup)
             return
+            
         if not context.args:
             await update.message.reply_text("Usage: /yts <query> [limit]\nExample: /yts heat waves 3")
             return
+            
         query = ' '.join(context.args[:-1]) if len(context.args) > 1 and context.args[-1].isdigit() else ' '.join(context.args)
         limit = int(context.args[-1]) if len(context.args) > 1 and context.args[-1].isdigit() else 5
+        
+        await context.bot.send_chat_action(chat_id=chat_id, action="typing")
+        
         response_message = await search_yts_multiple(query, limit)
+        
         await context.bot.send_message(
             chat_id=chat_id,
             text=response_message,
             reply_to_message_id=update.message.message_id
         )
+        
+    async def yta_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /yta command for YouTube Audio download."""
+        user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
+        chat_type = update.effective_chat.type
+        
+        # Access control
+        if chat_type == 'private' and user_id != ADMIN_USER_ID:
+            response, reply_markup = await self.get_private_chat_redirect()
+            await update.message.reply_text(response, reply_markup=reply_markup)
+            return
+            
+        if not context.args:
+            await update.message.reply_text("Usage: /yta <song_name/video_link>\nExample: /yta Cold Play yellow", reply_to_message_id=update.message.message_id)
+            return
+            
+        query_or_url = ' '.join(context.args)
+        
+        # Send initial status message
+        m = await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"🎧 **YouTube Audio**\n🔍 Searching for '{query_or_url}' and processing download...",
+            reply_to_message_id=update.message.message_id
+        )
+        await context.bot.send_chat_action(chat_id=chat_id, action="typing")
+        
+        # Run download
+        # NOTE: Passing 'm.message_id' would require changing the download_youtube_audio function signature to include ContextTypes for real-time edits, 
+        # but for simplicity, we pass chat_id and handle the updates outside the utility function.
+        success, message_or_file, audio_file = await download_youtube_audio(query_or_url, chat_id)
+
+        try:
+            if success:
+                await context.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=m.message_id,
+                    text="📤 Uploading Audio to Telegram..."
+                )
+                
+                # Send the audio file
+                await context.bot.send_audio(
+                    chat_id=chat_id,
+                    audio=audio_file,
+                    caption=message_or_file,
+                    parse_mode="Markdown",
+                    reply_to_message_id=update.message.message_id
+                )
+                
+                # Deleting the initial progress message
+                await context.bot.delete_message(chat_id=chat_id, message_id=m.message_id)
+            else:
+                # Send error message (message_or_file contains the error string)
+                await context.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=m.message_id,
+                    text=message_or_file
+                )
+        except Exception as e:
+            logger.error(f"Error during audio upload or message edit: {e}")
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="❌ An unexpected error occurred during file upload."
+            )
+
 
     async def ipinfo_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /ipinfo command"""
         user_id = update.effective_user.id
         chat_id = update.effective_chat.id
         chat_type = update.effective_chat.type
+        
         if chat_type == 'private' and user_id != ADMIN_USER_ID:
             response, reply_markup = await self.get_private_chat_redirect()
             await update.message.reply_text(response, reply_markup=reply_markup)
             return
+            
         if not context.args:
             await update.message.reply_text("Usage: /ipinfo <ip_address>\nExample: /ipinfo 203.0.113.123")
             return
+            
         ip_address = context.args[0]
+        await context.bot.send_chat_action(chat_id=chat_id, action="typing")
+        
         response_message = await get_ip_info(ip_address)
+        
         await context.bot.send_message(
             chat_id=chat_id,
             text=response_message,
@@ -706,18 +931,26 @@ All systems ready!
         user_id = update.effective_user.id
         chat_id = update.effective_chat.id
         chat_type = update.effective_chat.type
+        
         if chat_type == 'private' and user_id != ADMIN_USER_ID:
             response, reply_markup = await self.get_private_chat_redirect()
             await update.message.reply_text(response, reply_markup=reply_markup)
             return
+            
         if not context.args:
             await update.message.reply_text("Usage: /countryinfo <country_name>\nExample: /countryinfo bangladesh")
             return
+            
         country_name = ' '.join(context.args)
+        
         if not re.match(r'^[\x00-\x7F]*$', country_name):
             await update.message.reply_text("Please provide the country name in English. Example: 'Bangladesh'.")
             return
+            
+        await context.bot.send_chat_action(chat_id=chat_id, action="typing")
+        
         response_message = await get_country_info(country_name)
+        
         await context.bot.send_message(
             chat_id=chat_id,
             text=response_message,
@@ -729,15 +962,21 @@ All systems ready!
         user_id = update.effective_user.id
         chat_id = update.effective_chat.id
         chat_type = update.effective_chat.type
+        
         if chat_type == 'private' and user_id != ADMIN_USER_ID:
             response, reply_markup = await self.get_private_chat_redirect()
             await update.message.reply_text(response, reply_markup=reply_markup)
             return
+            
         if not context.args:
             await update.message.reply_text("Please provide a valid location name. Example: /weather Dhaka")
             return
+            
         location = ' '.join(context.args)
+        await context.bot.send_chat_action(chat_id=chat_id, action="typing")
+        
         response_message = await get_weather_info(location)
+        
         await context.bot.send_message(
             chat_id=chat_id,
             text=response_message,
@@ -745,14 +984,16 @@ All systems ready!
         )
 
     async def removebg_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /removebg command"""
+        """Handle /removebg command: sets state to receive photo"""
         user_id = update.effective_user.id
         chat_id = update.effective_chat.id
         chat_type = update.effective_chat.type
+        
         if chat_type == 'private' and user_id != ADMIN_USER_ID:
             response, reply_markup = await self.get_private_chat_redirect()
             await update.message.reply_text(response, reply_markup=reply_markup)
             return
+            
         removebg_state[chat_id] = True
         await update.message.reply_text(
             "Please upload an image whose background you want to remove. I will process it and send the result!"
@@ -763,15 +1004,20 @@ All systems ready!
         user_id = update.effective_user.id
         chat_id = update.effective_chat.id
         chat_type = update.effective_chat.type
+        
         if chat_type == 'private' and user_id != ADMIN_USER_ID:
             response, reply_markup = await self.get_private_chat_redirect()
             await update.message.reply_text(response, reply_markup=reply_markup)
             return
+            
         if not context.args:
             await update.message.reply_text("Usage: /img <prompt>\nExample: /img A cute anime girl in a futuristic city")
             return
+            
         prompt = ' '.join(context.args)
+        
         await context.bot.send_chat_action(chat_id=chat_id, action="upload_photo")
+        
         try:
             success, result = await generate_anime_image(prompt, chat_id)
             if success:
@@ -784,7 +1030,7 @@ All systems ready!
             else:
                 await context.bot.send_message(
                     chat_id=chat_id,
-                    text=f"❌ Problem generating image: Something went wrong. Please try again later!\n📅 Time: {datetime.now(BDT_TIMEZONE).strftime('%Y-%m-%d %H:%M:%S +06')}\n━━━━━━━━━━━━━━━━━━━━━━━━",
+                    text=f"❌ Problem generating image: {result}\n📅 Time: {datetime.now(BDT_TIMEZONE).strftime('%Y-%m-%d %H:%M:%S +06')}\n━━━━━━━━━━━━━━━━━━━━━━━━",
                     reply_to_message_id=update.message.message_id
                 )
         except Exception as e:
@@ -800,18 +1046,24 @@ All systems ready!
         user_id = update.effective_user.id
         chat_id = update.effective_chat.id
         chat_type = update.effective_chat.type
+        
         if chat_type == 'private' and user_id != ADMIN_USER_ID:
             response, reply_markup = await self.get_private_chat_redirect()
             await update.message.reply_text(response, reply_markup=reply_markup)
             return
+            
         if not context.args:
             await update.message.reply_text("Usage: /spotify <song_name>\nExample: /spotify Heat Waves")
             return
+            
         song_name = ' '.join(context.args)
+        
         await context.bot.send_chat_action(chat_id=chat_id, action="upload_photo")
+        
         try:
             results = await search_spotify(song_name)
             caption, album_art_url = await format_spotify_results(results)
+            
             if album_art_url:
                 await context.bot.send_photo(
                     chat_id=chat_id,
@@ -840,36 +1092,47 @@ All systems ready!
         user_id = update.effective_user.id
         chat_id = update.effective_chat.id
         chat_type = update.effective_chat.type
+        
         if chat_type == 'private' and user_id != ADMIN_USER_ID:
             response, reply_markup = await self.get_private_chat_redirect()
             await update.message.reply_text(response, reply_markup=reply_markup)
             return
+            
         if chat_id not in removebg_state or not removebg_state[chat_id]:
             return
+            
         await context.bot.send_chat_action(chat_id=chat_id, action="upload_photo")
+        
         try:
             photo = update.message.photo[-1]
             file = await photo.get_file()
             image_data = await file.download_as_bytearray()
+            
             success, result = await remove_background(image_data, chat_id)
+            
             if success:
                 await context.bot.send_photo(
                     chat_id=chat_id,
                     photo=result,
-                    caption=f"✅ Background removed successfully!\n📅 Time: {datetime.now(BDT_TIMEZONE).strftime('%Y-%m-%d %H:%M:%S +06')}\n━━━━━━━━━━━━━━━━━━━━━━━━"
+                    caption=f"✅ Background removed successfully!\n📅 Time: {datetime.now(BDT_TIMEZONE).strftime('%Y-%m-%d %H:%M:%S +06')}\n━━━━━━━━━━━━━━━━━━━━━━━━",
+                    reply_to_message_id=update.message.message_id
                 )
             else:
                 await context.bot.send_message(
                     chat_id=chat_id,
-                    text=f"❌ Failed to remove background: {result}"
+                    text=f"❌ Failed to remove background: {result}",
+                    reply_to_message_id=update.message.message_id
                 )
+                
             if chat_id in removebg_state:
                 del removebg_state[chat_id]
+                
         except Exception as e:
             logger.error(f"Error handling photo for chat {chat_id}: {e}")
             await context.bot.send_message(
                 chat_id=chat_id,
-                text="Problem processing image. Try again!"
+                text="Problem processing image. Try again!",
+                reply_to_message_id=update.message.message_id
             )
             if chat_id in removebg_state:
                 del removebg_state[chat_id]
@@ -878,11 +1141,12 @@ All systems ready!
         """Handle errors"""
         logger.error(f"Exception while handling an update: {context.error}")
         if update and hasattr(update, 'effective_chat') and hasattr(update, 'message'):
-            await update.message.reply_text("An error occurred. Please try again?")
+            if update.message:
+                await update.message.reply_text("An error occurred. Please try again?")
 
     def run(self):
-        """Start the bot"""
-        logger.info("Starting Telegram Bot...")
+        """Start the bot using long polling"""
+        logger.info("Starting Telegram Bot Polling...")
         self.application.run_polling(
             allowed_updates=Update.ALL_TYPES,
             drop_pending_updates=True
@@ -893,7 +1157,7 @@ def main():
     if not TELEGRAM_BOT_TOKEN:
         logger.error("TELEGRAM_BOT_TOKEN not provided!")
         return
-    logger.info("Starting Telegram Bot...")
+    logger.info("Initializing Telegram Bot...")
     logger.info(f"Admin User ID: {ADMIN_USER_ID}")
     bot = TelegramGeminiBot()
     bot.run()
